@@ -1,95 +1,75 @@
 package com.session;
 
 import java.util.ArrayList;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
-
-import com.cached.SpyMemcachedServer;
-import com.cached.SpyMemcachedManager;
-import com.util.EncryptionByMD5;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 
 public class SessionManager {
 	
-	private static SpyMemcachedManager manager = null;
+	private static Map<String, Session> sessionMap = new ConcurrentHashMap<String, Session>();
 	
-	public SessionManager() {
-		try {
-			String[][] servs = new String[][] { 
-			   { "localhost", "11211" },
-			// {"localhost", "11212"}
-			};
-			List<SpyMemcachedServer> servers = new ArrayList<SpyMemcachedServer>();
-			for (int i = 0; i < servs.length; i++) {
-				SpyMemcachedServer server = new SpyMemcachedServer();
-				server.setIp(servs[i][0]);
-				server.setPort(Integer.parseInt(servs[i][1]));
-				servers.add(server);
-			}
-			manager = new SpyMemcachedManager(servers);
-			manager.connect();
-			Thread thread = new Thread(new SessionThread());
-			thread.start();
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
-		
-	}
-
-	public SessionMap getSession(String userId) {
-		String sessionId = EncryptionByMD5.getMD5(userId);
-		Map<String, SessionMap> sessionContext = (Map<String, SessionMap>) manager.get("CONTEXT");
-		if(sessionContext == null) {
-			sessionContext = new ConcurrentHashMap<String, SessionMap>();
-		}
-		SessionMap session = new SessionMap();
-		sessionContext.put(sessionId, session);
-		manager.set("CONTEXT", sessionContext, 3000);
-		return session;
-	}
+	private static ExecutorService exs = null;
 	
-	class SessionThread implements Runnable {
+	static {
+		exs = Executors.newSingleThreadExecutor();
+		exs.execute(new Runnable() {
 
-		@Override
-		public void run() {
-			while(true) {
-				Queue<String> timeoutQueue = new LinkedList<String>();
-				
-				Map<String, SessionMap> sessionContext = (Map<String, SessionMap>) manager.get("CONTEXT");
-				if(sessionContext != null) {
-					for(String sessionId : sessionContext.keySet()) {
-						SessionMap session = sessionContext.get(sessionId);
+			@Override
+			public void run() {
+				while(!Thread.interrupted()) {
+					System.out.println("clear time out");
+					List<String> clearList = new ArrayList<String>();
+					for(String sessionId : sessionMap.keySet()) {
+						Session session = sessionMap.get(sessionId);
 						if(session.getMaxInactiveInterval() != -1) {
-							long inactiveInterval = session.getMaxInactiveInterval();
 							long currentTime = System.currentTimeMillis();
-							long sessionTime = session.getSessionTime();
-							System.out.println(currentTime + ":" + sessionTime + ":" + inactiveInterval);
-							if((currentTime - sessionTime) > inactiveInterval) {
-								session.clearSession();
-								timeoutQueue.add(sessionId);
+							long activitiTime = session.getActivitiTime();
+							//SESSION过期时清除
+							if((currentTime - activitiTime) >=  session.getMaxInactiveInterval()) {
+								session.sessionDestroy();
+								//记录清除的ID
+								clearList.add(sessionId);
 							}
 						}
 					}
-					for(int i = 0; i < timeoutQueue.size(); i++) {
-						String sessionId = timeoutQueue.poll();
-						System.out.println("remove:" + sessionId);
-						sessionContext.remove(sessionId);
+					for(String sessionId : clearList) {
+						//清除MAP信息
+						sessionMap.remove(sessionId);
 					}
-					timeoutQueue.clear();
-					timeoutQueue = null;
-					
-					manager.set("CONTEXT", sessionContext, 3000);
+					try {
+						Thread.sleep(10000);
+					} catch (InterruptedException e) {
+						Thread.currentThread().interrupt();
+						e.printStackTrace();
+					}
 				}
-				try {
-					Thread.sleep(1000);
-				} catch (InterruptedException e) {
-					e.printStackTrace();
-				}
+				
 			}
-		}
+			
+		});
 	}
-
+	/**
+	 * 介绍：通过系统本生的SESSIONID来创建分布式内存SESSION
+	 * 参数：STRING:SESSION
+	 **/
+	public static Session getSession(String sessionId){
+		//每个SESSIONID创建一个实例
+		Session session = sessionMap.get(sessionId);
+		
+		if(session == null) {
+			session = new Session();
+			session.init(sessionId);
+			sessionMap.put(sessionId, session);
+		}
+		
+		return session;
+	}
+	
+	public static void main(String[] args) {
+		SessionManager.getSession("xxxx");
+	}
 }
